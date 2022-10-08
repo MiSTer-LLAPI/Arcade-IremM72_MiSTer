@@ -263,7 +263,7 @@ localparam CONF_STR = {
     //None      : 00
     //LLAPI     : 01
     //Always double check witht the bits map allocation table to avoid conflicts    "-;",
-    "OM,Serial Mode,Off,LLAPI;",
+    "OM,BlisSTer Mode,Off,ON;",
     //END
 
     "-;",
@@ -454,13 +454,13 @@ LLAPI llapi2
 
 //P1
 wire [15:0] joy_ll_a = { 8'd0,                                                 // Pause
-    llapi_buttons[4],  llapi_buttons[6],  llapi_buttons[5],  llapi_buttons[1], llapi_buttons[0], // Coin Start-2P Start-1P Dig right Dig Left
+    llapi_buttons[4],  llapi_buttons[6],  llapi_buttons[5],  llapi_buttons[3], llapi_buttons[2], llapi_buttons[1], llapi_buttons[0], // Coin Start-2P Start-1P Dig right Dig Left
     llapi_buttons[27], llapi_buttons[26], llapi_buttons[25], llapi_buttons[24] // d-pad
 };
 
 //P2
 wire [15:0] joy_ll_b = { 8'd0,                                                 // Pause
-    llapi_buttons2[4],  llapi_buttons2[6],  llapi_buttons2[5],  llapi_buttons2[1], llapi_buttons2[0], // Coin Start-2P Start-1P Dig right Dig Left
+    llapi_buttons2[4],  llapi_buttons2[6],  llapi_buttons2[5], llapi_buttons2[3], llapi_buttons2[2], llapi_buttons2[1], llapi_buttons2[0], // Coin Start-2P Start-1P Dig right Dig Left
     llapi_buttons2[27], llapi_buttons2[26], llapi_buttons2[25], llapi_buttons2[24] // d-pad
 };
 
@@ -693,10 +693,10 @@ wire m_btny2    = btn_y       | joy2[7];
 
 //Start/coin
 wire m_start1   = btn_1p_start | joy1[8];
-wire m_start2   = btn_2p_start | joy2[8];
+wire m_start2   = btn_2p_start | joy[10];
 wire m_coin1    = btn_coin1    | joy1[9];
-wire m_coin2    = btn_coin2    | joy2[9]; 
-wire m_pause    = btn_pause    | joy1[10] | joy2[10];
+wire m_coin2    = btn_coin2;
+wire m_pause    = btn_pause    | joy1[11];
 
 //////////////////////////////////////////////////////////////////
 
