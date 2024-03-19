@@ -54,6 +54,7 @@ module emu
     output        VGA_F1,
     output [1:0]  VGA_SL,
     output        VGA_SCALER, // Force VGA scaler
+    output        VGA_DISABLE, // analog out is off
 
     input  [11:0] HDMI_WIDTH,
     input  [11:0] HDMI_HEIGHT,
@@ -190,6 +191,7 @@ assign CLK_VIDEO = CLK_32M;
 
 assign VGA_F1 = 0;
 assign VGA_SCALER = 0;
+assign VGA_DISABLE = 0;
 
 assign AUDIO_S = 1;
 assign AUDIO_MIX = 0;
@@ -222,9 +224,8 @@ wire en_sprite_palette = ~status[68];
 wire dbg_sprite_freeze = status[69];
 wire en_audio_filters = ~status[70];
 
-wire video_60hz = status[9:8] == 2'd3;
-wire video_57hz = status[9:8] == 2'd2;
-wire video_50hz = status[9:8] == 2'd1;
+video_timing_t video_timing;
+assign video_timing = video_timing_t'(status[9:8]);
 
 // If video timing changes, force mode update
 reg [1:0] video_status;
@@ -252,10 +253,9 @@ localparam CONF_STR = {
     "d2P1O[16:12],Crop Offset,0,1,2,3,4,5,6,7,8,-8,-7,-6,-5,-4,-3,-2,-1;",
     "P1-;",
     "P1O[20:17],Analog Video H-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
-	"P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
+    "P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
     "-;",
     "O[7],OSD Pause,Off,On;",
-
     //LLAPI
     //Add LLAPI option to the OSD menu
     //Need to reserve 1 bit :  "OM" = status[22] as there are 2 options (None, LLAPI) 
@@ -266,6 +266,7 @@ localparam CONF_STR = {
     "OM,BlisSTer Mode,Off,ON;",
     //END
 
+    "O[25],Autosave Hiscores,Off,On;",
     "-;",
     "DIP;",
     "-;",
@@ -291,12 +292,12 @@ wire [10:0] ps2_key;
 
 wire        ioctl_download;
 wire        ioctl_upload;
-wire        ioctl_upload_req = 0;
+wire        ioctl_upload_req;
 wire  [7:0] ioctl_index;
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
-wire  [7:0] ioctl_din = 0;
+wire  [7:0] ioctl_din;
 wire        ioctl_wait;
 
 wire [15:0] joystick_0, joystick_1;
@@ -498,10 +499,117 @@ pll pll
     .rst(0),
     .outclk_0(CLK_96M),
     .outclk_1(CLK_32M),
-    .locked(pll_locked)
+    .locked(pll_locked),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll)
 );
 
-wire reset = RESET | status[0] | buttons[1];
+wire [63:0] reconfig_to_pll;
+wire [63:0] reconfig_from_pll;
+wire        cfg_waitrequest;
+reg         cfg_write;
+reg   [5:0] cfg_address;
+reg  [31:0] cfg_data;
+
+pll_cfg pll_cfg
+(
+    .mgmt_clk(CLK_50M),
+    .mgmt_reset(0),
+    .mgmt_waitrequest(cfg_waitrequest),
+    .mgmt_read(0),
+    .mgmt_readdata(),
+    .mgmt_write(cfg_write),
+    .mgmt_address(cfg_address),
+    .mgmt_writedata(cfg_data),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll)
+);
+
+
+localparam PLL_PARAM_COUNT = 7;
+
+// 96Mhz, 32Mhz
+wire [31:0] PLL_55HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h1818, // M COUNTER
+    'h3, 'h20302, // N COUNTER
+    'h5, 'h20302, // C0 COUNTER
+    'h5, 'h60807, // C1 COUNTER
+    'h8, 'h4, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+// 99.450549 Mhz, 33.150183 Mhz
+wire [31:0] PLL_57HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h25b5a, // M COUNTER
+    'h3, 'h20403, // N COUNTER
+    'h5, 'h20706, // C0 COUNTER
+    'h5, 'h61413, // C1 COUNTER
+    'h8, 'h3, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+// 104.687500 Mhz, 34.895833 Mhz
+wire [31:0] PLL_60HZ[PLL_PARAM_COUNT * 2] = '{
+    'h0, 'h0, // set waitrequest mode
+    'h4, 'h22221, // M COUNTER
+    'h3, 'h202, // N COUNTER
+    'h5, 'h404, // C0 COUNTER
+    'h5, 'h40c0c, // C1 COUNTER
+    'h8, 'h6, // BANDWIDTH SETTING
+    'h2, 'h0 // start reconfigure
+};
+
+video_timing_t video_timing_lat = VIDEO_55HZ;
+reg reconfig_pause = 0;
+
+always @(posedge CLK_50M) begin
+    reg [3:0] param_idx = 0;
+    reg [7:0] reconfig = 0;
+
+    cfg_write <= 0;
+
+    if (pll_locked & ~cfg_waitrequest) begin
+        pll_init_locked <= 1;
+        if (&reconfig) begin // do reconfig
+            case(video_timing_lat)
+            VIDEO_50HZ: begin
+                cfg_address <= PLL_55HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_55HZ[param_idx * 2 + 1];
+            end
+            VIDEO_55HZ: begin
+                cfg_address <= PLL_55HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_55HZ[param_idx * 2 + 1];
+            end
+            VIDEO_57HZ: begin
+                cfg_address <= PLL_57HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_57HZ[param_idx * 2 + 1];
+            end
+            VIDEO_60HZ: begin
+                cfg_address <= PLL_60HZ[param_idx * 2 + 0][5:0];
+                cfg_data    <= PLL_60HZ[param_idx * 2 + 1];
+            end
+            endcase
+
+            cfg_write <= 1;
+            param_idx <= param_idx + 4'd1;
+            if (param_idx == PLL_PARAM_COUNT - 1) reconfig <= 8'd0;
+
+        end else if (video_timing != video_timing_lat) begin // new timing requested
+            video_timing_lat <= video_timing;
+            reconfig <= 8'd1;
+            reconfig_pause <= 1;
+            param_idx <= 0;
+        end else if (|reconfig) begin // pausing before reconfigure
+            reconfig <= reconfig + 8'd1;
+        end else begin
+            reconfig_pause <= 0; // unpause once pll is locked again
+        end
+    end
+end
+
+wire reset = RESET | status[0] | buttons[1] | ~pll_init_locked;
 
 ///////////////////////////////////////////////////////////////////////
 // SDRAM
@@ -518,6 +626,7 @@ wire [15:0] sdr_cpu_dout, sdr_cpu_din;
 wire [24:0] sdr_cpu_addr;
 wire sdr_cpu_req;
 wire [1:0] sdr_cpu_wr_sel;
+wire sdr_cpu_mem_rq;
 
 reg [24:0] sdr_rom_addr;
 reg [15:0] sdr_rom_data;
@@ -525,6 +634,8 @@ reg [1:0] sdr_rom_be;
 reg sdr_rom_req;
 
 wire sdr_rom_write = ioctl_download && (ioctl_index == 0);
+
+
 wire [24:0] sdr_ch3_addr = sdr_rom_write ? sdr_rom_addr : sdr_cpu_addr;
 wire [15:0] sdr_ch3_din = sdr_rom_write ? sdr_rom_data : sdr_cpu_din;
 wire [1:0] sdr_ch3_be = sdr_rom_write ? sdr_rom_be : sdr_cpu_wr_sel;
@@ -534,6 +645,7 @@ wire sdr_ch3_rdy;
 wire sdr_cpu_rdy = sdr_ch3_rdy;
 wire sdr_rom_rdy = sdr_ch3_rdy;
 
+
 wire [19:0] bram_addr;
 wire [7:0] bram_data;
 wire [4:0] bram_cs;
@@ -541,11 +653,13 @@ wire bram_wr;
 
 board_cfg_t board_cfg;
 
+reg pll_init_locked = 0;
+
 sdram sdram
 (
     .*,
-    .doRefresh(0),
-    .init(~pll_locked),
+    .doRefresh(1),
+    .init(~pll_init_locked),
     .clk(CLK_96M),
 
     .ch1_addr(sdr_bg_addr[24:1]),
@@ -748,6 +862,13 @@ m72 m72(
     .sdr_cpu_req(sdr_cpu_req),
     .sdr_cpu_rdy(sdr_cpu_rdy),
     .sdr_cpu_wr_sel(sdr_cpu_wr_sel),
+    .sdr_cpu_mem_rq(sdr_cpu_mem_rq),
+    .hs_address(hs_address),
+    .hs_data_out(hs_data_out),
+    .hs_data_in(hs_data_in),
+    .hs_read_enable(hs_read_enable),
+    .hs_write_enable(hs_write_enable),
+    .hs_data_ready(hs_data_ready),
 
     .clk_bram(clk_sys),
     .bram_addr(bram_addr),
@@ -756,9 +877,9 @@ m72 m72(
     .bram_wr(bram_wr),
 
 `ifdef M72_DEBUG
-    .pause_rq(system_pause | debug_stall),
+    .pause_rq(system_pause | debug_stall | reconfig_pause),
 `else
-    .pause_rq(system_pause),
+    .pause_rq(system_pause | reconfig_pause),
 `endif
     .ddr_debug_data(ddr_debug_data),
     
@@ -771,9 +892,7 @@ m72 m72(
 
     .sprite_freeze(dbg_sprite_freeze),
 
-    .video_50hz(video_50hz),
-    .video_57hz(video_57hz),
-    .video_60hz(video_60hz)
+    .video_timing(video_timing)
 );
 
 // H/V offset
@@ -781,41 +900,20 @@ wire [3:0]	hoffset = status[20:17];
 wire [3:0]	voffset = status[24:21];
 jtframe_resync jtframe_resync
 (
-	.clk(CLK_VIDEO),
-	.pxl_cen(ce_pix),
-	.hs_in(hs_core),
-	.vs_in(vs_core),
-	.LVBL(~VBlank),
-	.LHBL(~HBlank),
-	.hoffset(hoffset),
-	.voffset(voffset),
-	.hs_out(HSync),
-	.vs_out(VSync)
-);
-
-wire gamma_hsync, gamma_vsync, gamma_hblank, gamma_vblank;
-wire [7:0] gamma_r, gamma_g, gamma_b;
-gamma_fast video_gamma
-(
-    .clk_vid(CLK_VIDEO),
-    .ce_pix(ce_pix),
-    .gamma_bus(gamma_bus),
-    .HSync(HSync),
-    .VSync(VSync),
-    .HBlank(HBlank),
-    .VBlank(VBlank),
-    .DE(),
-    .RGB_in({R, G, B}),
-    .HSync_out(gamma_hsync),
-    .VSync_out(gamma_vsync),
-    .HBlank_out(gamma_hblank),
-    .VBlank_out(gamma_vblank),
-    .DE_out(),
-    .RGB_out({gamma_r, gamma_g, gamma_b})
+    .clk(CLK_VIDEO),
+    .pxl_cen(ce_pix),
+    .hs_in(hs_core),
+    .vs_in(vs_core),
+    .LVBL(~VBlank),
+    .LHBL(~HBlank),
+    .hoffset(hoffset),
+    .voffset(voffset),
+    .hs_out(HSync),
+    .vs_out(VSync)
 );
 
 wire VGA_DE_MIXER;
-video_mixer #(386, 0, 0) video_mixer(
+video_mixer #(512, 0, 1) video_mixer(
     .CLK_VIDEO(CLK_VIDEO),
     .CE_PIXEL(CE_PIXEL),
     .ce_pix(ce_pix),
@@ -823,16 +921,16 @@ video_mixer #(386, 0, 0) video_mixer(
     .scandoubler(forced_scandoubler || scandoubler_fx != 2'b00),
     .hq2x(0),
 
-    .gamma_bus(),
+    .gamma_bus(gamma_bus),
 
-    .R(gamma_r),
-    .G(gamma_g),
-    .B(gamma_b),
+    .R(R),
+    .G(G),
+    .B(B),
 
-    .HBlank(gamma_hblank),
-    .VBlank(gamma_vblank),
-    .HSync(gamma_hsync),
-    .VSync(gamma_vsync),
+    .HBlank(HBlank),
+    .VBlank(VBlank),
+    .HSync(HSync),
+    .VSync(VSync),
 
     .VGA_R(VGA_R),
     .VGA_G(VGA_G),
@@ -868,7 +966,7 @@ pause pause(
     .clk_sys(clk_sys),
     .reset(reset),
     .user_button(m_pause),
-    .pause_request(0),
+    .pause_request(hs_pause),
     .options({1'b0, pause_in_osd}),
     .pause_cpu(system_pause),
     .OSD_STATUS(OSD_STATUS)
@@ -888,9 +986,45 @@ ddr_debug ddr_debug(
     .*,
     .data(ddr_debug_data),
     .clk(CLK_96M),
-    .reset(reset | ~pll_locked),
+    .reset(reset),
     .stall(debug_stall)
 );
 `endif
 
+//HISCORE
+
+wire [16:0]	hs_address;
+wire [7:0] 	hs_data_in;
+wire [7:0]	hs_data_out;
+wire hs_write_enable;
+wire hs_read_enable;
+wire hs_access_read;
+wire hs_access_write;
+wire hs_pause;
+wire hs_configured;
+reg hs_data_ready;
+
+
+hiscore #(
+        .HS_ADDRESSWIDTH(17)
+) hi (
+    .*,
+    .clk(clk_sys),
+    .paused(system_pause),
+    .autosave(status[25]),
+    .ram_address(hs_address),
+    .data_ready(hs_data_ready),
+    .data_from_ram(hs_data_out),
+    .data_to_ram(hs_data_in),
+    .data_from_hps(ioctl_dout),
+    .data_to_hps(ioctl_din),
+    .ram_write(hs_write_enable),
+    .ram_read(hs_read_enable),
+    .ram_intent_read(hs_access_read),
+    .ram_intent_write(hs_access_write),
+    .pause_cpu(hs_pause),
+    .configured(hs_configured)
+);
 endmodule
+
+

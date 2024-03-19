@@ -68,8 +68,17 @@ module m72 (
     input [15:0] sdr_cpu_dout,
     output [15:0] sdr_cpu_din,
     output sdr_cpu_req,
+    output sdr_cpu_mem_rq,
     input sdr_cpu_rdy,
     output [1:0] sdr_cpu_wr_sel,
+
+    input [16:0] hs_address,
+    output [7:0] hs_data_out,
+    output hs_data_ready,
+    input [7:0] hs_data_in,
+    input hs_read_enable,
+    input hs_write_enable,
+    
 
     input clk_bram,
     input bram_wr,
@@ -86,9 +95,7 @@ module m72 (
 
     input sprite_freeze,
 
-    input video_60hz,
-    input video_57hz,
-    input video_50hz,
+    input video_timing_t video_timing,
 
     output ddr_debug_data_t ddr_debug_data
 );
@@ -110,15 +117,16 @@ always @(posedge CLK_32M) begin
     end
 end
 
-reg [1:0] ce_counter_cpu, ce_counter_mcu;
+reg [1:0] ce_counter_cpu;
 reg ce_cpu, ce_4x_cpu, ce_mcu;
+wire ce_mcu_nopause;
 
 always @(posedge CLK_32M) begin
     if (!reset_n) begin
         ce_cpu <= 0;
         ce_4x_cpu <= 0;
         ce_counter_cpu <= 0;
-        ce_counter_mcu <= 0;
+        ce_mcu <= 0;
     end else begin
         ce_cpu <= 0;
         ce_4x_cpu <= 0;
@@ -130,19 +138,26 @@ always @(posedge CLK_32M) begin
                 ce_4x_cpu <= 1;
                 ce_cpu <= &ce_counter_cpu;
             end
-            ce_counter_mcu <= ce_counter_mcu + 2'd1;
-            ce_mcu <= &ce_counter_mcu;
+            ce_mcu <= ce_mcu_nopause;
         end
     end
 end
 
-wire ce_pix_half;
+wire ce_pix_half, ce_mcu_half;
 jtframe_frac_cen #(2) pixel_cen
 (
     .clk(CLK_32M),
-    .n(video_57hz ? 10'd115 : video_60hz ? 10'd207 : 10'd1),
-    .m(video_57hz ? 10'd444 : video_60hz ? 10'd760 : 10'd4),
+    .n(10'd1),
+    .m(10'd4),
     .cen({ce_pix_half, ce_pix})
+);
+
+jtframe_frac_cen #(2) mcu_cen
+(
+    .clk(CLK_32M),
+    .n(video_timing == VIDEO_57HZ ? 10'd153 : video_timing == VIDEO_60HZ ? 10'd221  : 10'd1),
+    .m(video_timing == VIDEO_57HZ ? 10'd634 : video_timing == VIDEO_60HZ ? 10'd964 : 10'd4),
+    .cen({ce_mcu_half, ce_mcu_nopause})
 );
 
 wire clock = CLK_32M;
@@ -162,9 +177,13 @@ wire [15:0] cpu_mem_out;
 wire [19:0] cpu_mem_addr;
 wire [1:0] cpu_mem_sel;
 reg cpu_mem_read_lat, cpu_mem_write_lat;
+reg hs_mem_read_lat, hs_mem_write_lat;
 wire cpu_mem_read_w, cpu_mem_write_w;
 wire cpu_mem_read = cpu_mem_read_w | cpu_mem_read_lat;
 wire cpu_mem_write = cpu_mem_write_w | cpu_mem_write_lat;
+wire hs_mem_read = hs_read_enable | hs_mem_read_lat;
+wire hs_mem_write = hs_write_enable | hs_mem_write_lat;
+
 
 wire cpu_io_read, cpu_io_write;
 wire [7:0] cpu_io_in;
@@ -195,6 +214,8 @@ function [15:0] word_shuffle(input [19:0] addr, input [15:0] data);
 endfunction
 
 reg mem_rq_active = 0;
+assign sdr_cpu_mem_rq = mem_rq_active;
+
 reg b_d_dout_valid_lat, obj_pal_dout_valid_lat, sound_dout_valid_lat, sprite_dout_valid_lat;
 
 always @(posedge CLK_32M or negedge reset_n)
@@ -207,6 +228,8 @@ begin
     end else begin
         cpu_mem_read_lat <= cpu_mem_read_w;
         cpu_mem_write_lat <= cpu_mem_write_w;
+        hs_mem_read_lat <= hs_read_enable;
+        hs_mem_write_lat <= hs_write_enable;
 
         b_d_dout_valid_lat <= b_d_dout_valid;
         obj_pal_dout_valid_lat <= obj_pal_dout_valid;
@@ -216,7 +239,9 @@ begin
 end
 
 reg sdr_cpu_rq, sdr_cpu_ack, sdr_cpu_rq2;
+reg sdr_hs_req_active;
 
+reg [16:0] hs_address2;
 always_ff @(posedge CLK_96M) begin
     sdr_cpu_req <= 0;
     if (sdr_cpu_rdy) sdr_cpu_ack <= sdr_cpu_rq;
@@ -231,6 +256,7 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
     if (!reset_n) begin
         mem_rq_active <= 0;
     end else begin
+        hs_data_ready <= 0;
         if (!mem_rq_active) begin
             if (ls245_en && ((cpu_mem_read_w & ~cpu_mem_read_lat) || (cpu_mem_write_w & ~cpu_mem_write_lat))) begin // sdram request
                 sdr_cpu_wr_sel <= 2'b00;
@@ -241,10 +267,29 @@ always_ff @(posedge CLK_32M or negedge reset_n) begin
                 end
                 sdr_cpu_rq <= ~sdr_cpu_rq;
                 mem_rq_active <= 1;
-            end
+              end else if ((hs_read_enable & ~hs_mem_read_lat) || (hs_write_enable & ~hs_mem_write_lat)) begin
+                sdr_cpu_wr_sel <= 2'b00;
+                sdr_cpu_addr <= REGION_CPU_RAM.base_addr[24:0] | hs_address[16:0];
+                if (hs_mem_write) begin
+                  sdr_cpu_wr_sel <= {hs_address[0], ~hs_address[0]};
+                  sdr_cpu_din <= {hs_data_in, hs_data_in};
+                end
+                sdr_cpu_rq <= ~sdr_cpu_rq;
+                hs_address2 <= hs_address;
+                mem_rq_active <= 1;
+                sdr_hs_req_active <= 1; 
+              end
         end else if (sdr_cpu_rq == sdr_cpu_ack) begin
-            cpu_ram_rom_data <= sdr_cpu_dout;
-            mem_rq_active <= 0;
+            if (sdr_hs_req_active) begin
+              hs_data_out <= hs_address[0] ? sdr_cpu_dout[15:8] : sdr_cpu_dout[7:0];
+              mem_rq_active <= 0;
+              sdr_hs_req_active <= 0;
+              hs_data_ready <= 1; 
+            end else begin
+              cpu_ram_rom_data <= sdr_cpu_dout;
+              mem_rq_active <= 0;
+            end
+
         end
     end
 end
@@ -304,10 +349,6 @@ cpu v30(
     .cpu_halt(),
     .cpu_irqrequest(),
     .cpu_prefix(),
-
-    .dma_active(0),
-    .sdma_request(0),
-    .canSpeedup(),
 
     .bus_read(cpu_mem_read_w),
     .bus_write(cpu_mem_write_w),
@@ -434,7 +475,7 @@ kna70h015 kna70h015(
     .HS(HS),
     .VS(VS),
 
-    .video_50hz(video_50hz)
+    .video_50hz(video_timing == VIDEO_50HZ)
 );
 
 wire [15:0] b_d_dout;
@@ -454,7 +495,6 @@ board_b_d board_b_d(
 
     .DIN(cpu_word_out),
     .A(cpu_word_addr),
-    .BYTE_SEL(cpu_word_byte_sel),
 
     .IO_DIN(cpu_io_out),
     .IO_A(cpu_io_addr),
@@ -512,7 +552,6 @@ sound sound(
     .DOUT_VALID(sound_dout_valid),
     
     .A(cpu_mem_addr),
-    .BYTE_SEL(cpu_mem_sel),
 
     .IO_A(cpu_io_addr),
     .IO_DIN(cpu_io_out),
@@ -541,6 +580,8 @@ sound sound(
 
     .m84(m84),
 
+    .video_timing(video_timing),
+
     .clk_bram(clk_bram),
     .bram_wr(bram_wr),
     .bram_data(bram_data),
@@ -565,7 +606,7 @@ kna91h014 obj_pal(
     .E1_N(), // TODO
     .E2_N(), // TODO
     
-    .MWR(MWR & cpu_word_byte_sel[0]),
+    .MWR(MWR),
     .MRD(MRD),
 
     .DIN(cpu_word_out),
@@ -603,7 +644,6 @@ sprite sprite(
     .DOUT_VALID(sprite_dout_valid),
     
     .A(cpu_word_addr),
-    .BYTE_SEL(cpu_word_byte_sel),
 
     .BUFDBEN(sprite_memrq),
     .MRD(MRD),

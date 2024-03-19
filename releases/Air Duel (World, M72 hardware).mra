@@ -1,6 +1,6 @@
 <misterromdescription>
     <name>Air Duel (World, M72 hardware)</name>
-    <mameversion>0245</mameversion>
+    <mameversion>0248</mameversion>
     <setname>airduelm72</setname>
     <parent>airduel</parent>
     <year>1990</year>
@@ -64,10 +64,17 @@
 
         <!-- mcu -->
         <part>04 00 10 00</part>
-        <part name="ad_c-pr-.ic1" crc="8785e4e2"/>
+        <part name="ad_c-pr-c.ic1" crc="8785e4e2"/>
 
         <!-- samples -->
         <part>05 02 00 00</part>
         <part name="ad-v0.ic44" crc="339f474d"/>
     </rom>
+    <rom index="3" md5="none">
+            <part>
+            0F 00 00 00 0F FF 00 01 00 0F 00 01 00 01 F0 00
+            00 0a 3d 4e 82 15 20 00
+            </part>
+    </rom>
+    <nvram index="4" size="130"></nvram>
 </misterromdescription>
