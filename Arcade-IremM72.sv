@@ -17,6 +17,7 @@
 //  with this program; if not, write to the Free Software Foundation, Inc.,
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //============================================================================
+//LLAPI: llapi.sv needs to be in rtl folder and needs to be declared in file.qip (set_global_assignment -name SYSTEMVERILOG_FILE rtl/llapi.sv)
 
 
 import m72_pkg::*;
@@ -240,6 +241,12 @@ end
 `include "build_id.v" 
 localparam CONF_STR = {
     "M72;;",
+	//LLAPI: OSD menu item
+	//LLAPI Always ON
+	"-,<< LLAPI enabled >>;",
+	"-,<< Use USER I/O port >>;",
+	"-;",
+	//END LLAPI	
     "-;",
     "P1,Video Settings;",
     "P1O[2:1],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
@@ -256,16 +263,6 @@ localparam CONF_STR = {
     "P1O[24:21],Analog Video V-Pos,0,-1,-2,-3,-4,-5,-6,-7,8,7,6,5,4,3,2,1;",
     "-;",
     "O[7],OSD Pause,Off,On;",
-    //LLAPI
-    //Add LLAPI option to the OSD menu
-    //Need to reserve 1 bit :  "OM" = status[22] as there are 2 options (None, LLAPI) 
-    //To detect LLAPI status[22] should be TRUE
-    //None      : 00
-    //LLAPI     : 01
-    //Always double check witht the bits map allocation table to avoid conflicts    "-;",
-    "OM,BlisSTer Mode,Off,ON;",
-    //END
-
     "O[25],Autosave Hiscores,Off,On;",
     "-;",
     "DIP;",
@@ -385,7 +382,7 @@ wire [71:0] llapi_analog, llapi_analog2;
 wire [7:0]  llapi_type, llapi_type2;
 wire llapi_en, llapi_en2;
 
-wire llapi_select = status[22]; // This is the status bit from the Menu (see Menu configuration block to check what bits need to be tested)
+wire llapi_select = 1'b1; 
 
 wire llapi_latch_o, llapi_latch_o2, llapi_data_o, llapi_data_o2;
 
@@ -465,7 +462,7 @@ wire [15:0] joy_ll_b = { 8'd0,                                                 /
     llapi_buttons2[27], llapi_buttons2[26], llapi_buttons2[25], llapi_buttons2[24] // d-pad
 };
 
-//Assign (DOWN + START + FIRST BUTTON) Combinaison to bring the OSD up - P1 and P1 ports
+//Assign (DOWN + START + FIRST BUTTON) Combinaison to bring the OSD up - P1 and P2 ports
 wire llapi_osd = (llapi_buttons[26] & llapi_buttons[5] & llapi_buttons[0]) || (llapi_buttons2[26] & llapi_buttons2[5] & llapi_buttons2[0]);
 
 
